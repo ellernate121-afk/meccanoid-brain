@@ -9,8 +9,8 @@ load_dotenv()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-change-me')
 
-# Initialize SocketIO with event_namespace for better control
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# Initialize SocketIO with threading async mode for better compatibility
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Setup logging
 logging.basicConfig(level=os.getenv('LOG_LEVEL', 'INFO'))
