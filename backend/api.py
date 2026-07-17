@@ -1,17 +1,42 @@
 from flask import Blueprint, request, jsonify, current_app
 import logging
+import requests
 from datetime import datetime
+import os
 
 api_bp = Blueprint('api', __name__)
 logger = logging.getLogger(__name__)
 
+# Local bridge URL (your Linux box running local_bridge.py)
+BRIDGE_URL = os.getenv('BRIDGE_URL', 'http://localhost:5001')
+
+def send_to_bridge(command):
+    """Send command to local bridge and get response"""
+    try:
+        response = requests.post(
+            f'{BRIDGE_URL}',
+            json=command,
+            timeout=5
+        )
+        return response.json()
+    except requests.exceptions.ConnectionError:
+        logger.error(f"Failed to connect to bridge at {BRIDGE_URL}")
+        return {'error': 'Bridge unavailable'}
+    except Exception as e:
+        logger.error(f"Error communicating with bridge: {str(e)}")
+        return {'error': str(e)}
+
 @api_bp.route('/status', methods=['GET'])
 def get_status():
-    """Get system status and ESP32 connection state"""
+    """Get system status and bridge connection state"""
+    try:
+        bridge_status = requests.get(f'{BRIDGE_URL}/status', timeout=2).json()
+    except:
+        bridge_status = {'error': 'Bridge unavailable'}
+    
     return jsonify({
         'timestamp': datetime.utcnow().isoformat(),
-        'esp32_connected': current_app.connected_esp32 is not None,
-        'servos': current_app.servo_status,
+        'bridge_status': bridge_status,
         'server_status': 'online'
     }), 200
 
@@ -26,9 +51,6 @@ def move_servo():
         "speed": 50  (optional, 0-100)
     }
     """
-    if not current_app.connected_esp32:
-        return jsonify({'error': 'ESP32 not connected'}), 503
-    
     data = request.get_json()
     
     # Validation
@@ -45,29 +67,25 @@ def move_servo():
     if not (0 <= speed <= 100):
         return jsonify({'error': 'Speed must be between 0 and 100'}), 400
     
-    # Send command to ESP32 via websocket
-    try:
-        command = {
-            'type': 'servo_move',
-            'servo': servo_id,
-            'angle': angle,
-            'speed': speed
-        }
-        
-        # Import socketio from app context
-        from app import socketio
-        socketio.emit('command', command, to=current_app.connected_esp32)
-        
-        logger.info(f"Sent servo move command: {command}")
-        
-        return jsonify({
-            'status': 'sent',
-            'command': command
-        }), 202
+    # Send command to ESP32 via local bridge
+    command = {
+        'type': 'servo_move',
+        'servo': servo_id,
+        'angle': angle,
+        'speed': speed
+    }
     
-    except Exception as e:
-        logger.error(f"Error sending command: {str(e)}")
-        return jsonify({'error': 'Failed to send command'}), 500
+    response = send_to_bridge(command)
+    logger.info(f"Servo move command: {command} -> Response: {response}")
+    
+    if 'error' in response:
+        return jsonify(response), 503
+    
+    return jsonify({
+        'status': 'sent',
+        'command': command,
+        'response': response
+    }), 200
 
 @api_bp.route('/command', methods=['POST'])
 def send_command():
@@ -79,9 +97,6 @@ def send_command():
         "params": {...}
     }
     """
-    if not current_app.connected_esp32:
-        return jsonify({'error': 'ESP32 not connected'}), 503
-    
     data = request.get_json()
     command_name = data.get('command')
     params = data.get('params', {})
@@ -89,26 +104,23 @@ def send_command():
     if not command_name:
         return jsonify({'error': 'Missing command name'}), 400
     
-    try:
-        command = {
-            'type': 'custom_command',
-            'command': command_name,
-            'params': params
-        }
-        
-        from app import socketio
-        socketio.emit('command', command, to=current_app.connected_esp32)
-        
-        logger.info(f"Sent custom command: {command_name}")
-        
-        return jsonify({
-            'status': 'sent',
-            'command': command_name
-        }), 202
+    command = {
+        'type': 'custom_command',
+        'command': command_name,
+        'params': params
+    }
     
-    except Exception as e:
-        logger.error(f"Error sending command: {str(e)}")
-        return jsonify({'error': 'Failed to send command'}), 500
+    response = send_to_bridge(command)
+    logger.info(f"Custom command: {command_name} -> Response: {response}")
+    
+    if 'error' in response:
+        return jsonify(response), 503
+    
+    return jsonify({
+        'status': 'sent',
+        'command': command_name,
+        'response': response
+    }), 200
 
 @api_bp.route('/healthz', methods=['GET'])
 def healthz():
